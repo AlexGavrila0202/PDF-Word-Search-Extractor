@@ -1,0 +1,414 @@
+"""
+PDF Word Search & Extractor
+===========================
+
+This application provides a graphical user interface (GUI) for searching PDF files
+within a specified folder for a list of keywords. It can optionally create new PDF
+files containing only the pages that match the search criteria.
+
+Dependencies:
+- PyMuPDF (fitz): For reading and processing PDF files.
+- customtkinter: For building a modern, cross-platform GUI.
+- tkinter: Standard Python library for the GUI.
+
+To install the required libraries, run the following command in your terminal:
+    pip install PyMuPDF customtkinter
+"""
+
+import os
+import fitz  # PyMuPDF library
+import customtkinter
+from tkinter import messagebox, filedialog
+import threading
+import re
+from datetime import datetime
+
+
+class App(customtkinter.CTk):
+    """
+    Main application class for the PDF Word Search & Extractor.
+
+    This class sets up the GUI, handles user input, and manages the search and
+    extraction process in a separate thread to prevent the UI from freezing.
+    """
+    def __init__(self):
+        """Initializes the main application window and its widgets."""
+        super().__init__()
+
+        # --- Window Configuration ---
+        self.title("PDF Word Search & Extractor")
+        self.geometry("700x800")
+        customtkinter.set_appearance_mode("dark")
+        customtkinter.set_default_color_theme("blue")
+
+        # --- Main Frame ---
+        self.main_frame = customtkinter.CTkFrame(self)
+        self.main_frame.pack(pady=20, padx=20, fill="both", expand=True)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+
+        # --- Input Widgets ---
+        # Folder Path Input Frame
+        folder_frame = customtkinter.CTkFrame(self.main_frame)
+        folder_frame.pack(fill="x", padx=10, pady=(10, 5))
+        folder_frame.grid_columnconfigure(0, weight=1)
+
+        self.folder_label = customtkinter.CTkLabel(folder_frame, text="Folder to Search In:")
+        self.folder_label.grid(row=0, column=0, columnspan=2, padx=5, sticky="w")
+
+        self.folder_entry = customtkinter.CTkEntry(folder_frame, placeholder_text=r"e.g., C:\Users\YourUser\Documents")
+        self.folder_entry.grid(row=1, column=0, pady=5, padx=(5, 0), sticky="ew")
+
+        self.browse_button = customtkinter.CTkButton(folder_frame, text="Browse...", width=100,
+                                                       command=self.browse_folder)
+        self.browse_button.grid(row=1, column=1, pady=5, padx=5)
+
+        # Output Folder Path Input Frame
+        output_folder_frame = customtkinter.CTkFrame(self.main_frame)
+        output_folder_frame.pack(fill="x", padx=10, pady=(5, 5))
+        output_folder_frame.grid_columnconfigure(0, weight=1)
+
+        self.output_folder_label = customtkinter.CTkLabel(output_folder_frame,
+                                                         text="Folder to Save Extracted PDFs In (Optional):")
+        self.output_folder_label.grid(row=0, column=0, columnspan=2, padx=5, sticky="w")
+
+        self.output_folder_entry = customtkinter.CTkEntry(output_folder_frame,
+                                                         placeholder_text="Leave blank to save in the search folder")
+        self.output_folder_entry.grid(row=1, column=0, pady=5, padx=(5, 0), sticky="ew")
+
+        self.browse_output_button = customtkinter.CTkButton(output_folder_frame, text="Browse...", width=100,
+                                                             command=self.browse_output_folder)
+        self.browse_output_button.grid(row=1, column=1, pady=5, padx=5)
+
+        # Search Words Input
+        self.words_label = customtkinter.CTkLabel(self.main_frame, text="Words to Search (separated by commas):")
+        self.words_label.pack(pady=(10, 5), padx=10, anchor="w")
+        self.words_entry = customtkinter.CTkEntry(self.main_frame, placeholder_text="e.g., invoice, analysis, data")
+        self.words_entry.pack(pady=5, padx=10, fill="x")
+
+        # --- Search Options ---
+        options_frame = customtkinter.CTkFrame(self.main_frame)
+        options_frame.pack(fill="x", padx=10, pady=10)
+
+        self.strip_spaces_var = customtkinter.StringVar(value="on")
+        self.strip_spaces_checkbox = customtkinter.CTkCheckBox(
+            options_frame, text="Trim spaces",
+            variable=self.strip_spaces_var, onvalue="on", offvalue="off"
+        )
+        self.strip_spaces_checkbox.pack(side="left", padx=10, pady=5)
+
+        self.regex_var = customtkinter.StringVar(value="off")
+        self.regex_checkbox = customtkinter.CTkCheckBox(
+            options_frame, text="Use Regex",
+            variable=self.regex_var, onvalue="on", offvalue="off"
+        )
+        self.regex_checkbox.pack(side="left", padx=10, pady=5)
+
+        self.create_pdf_var = customtkinter.StringVar(value="off")
+        self.create_pdf_checkbox = customtkinter.CTkCheckBox(
+            options_frame, text="Create new PDF(s)",
+            variable=self.create_pdf_var, onvalue="on", offvalue="off"
+        )
+        self.create_pdf_checkbox.pack(side="left", padx=10, pady=5)
+
+        # Checkbox to combine results into a single output PDF
+        self.combine_results_var = customtkinter.StringVar(value="off")
+        self.combine_results_checkbox = customtkinter.CTkCheckBox(
+            options_frame, text="Combine all results into one PDF",
+            variable=self.combine_results_var, onvalue="on", offvalue="off"
+        )
+        self.combine_results_checkbox.pack(side="left", padx=10, pady=5)
+
+        # NEW: Checkbox to highlight matches
+        self.highlight_matches_var = customtkinter.StringVar(value="off")
+        self.highlight_matches_checkbox = customtkinter.CTkCheckBox(
+            options_frame, text="Highlight Matches",
+            variable=self.highlight_matches_var, onvalue="on", offvalue="off"
+        )
+        self.highlight_matches_checkbox.pack(side="left", padx=10, pady=5)
+
+        # Search Button
+        self.search_button = customtkinter.CTkButton(self.main_frame, text="Search PDFs",
+                                                       command=self.start_search_thread)
+        self.search_button.pack(pady=10, padx=10)
+
+        # --- Progress Bar and Status Label ---
+        self.progress_label = customtkinter.CTkLabel(self.main_frame, text="")
+        self.progress_label.pack(pady=(5, 0), padx=10)
+        self.progressbar = customtkinter.CTkProgressBar(self.main_frame)
+        self.progressbar.pack(pady=5, padx=10, fill="x")
+        self.progressbar.set(0)
+
+        # --- Results Display ---
+        self.results_textbox = customtkinter.CTkTextbox(self.main_frame, wrap="word")
+        self.results_textbox.pack(pady=10, padx=10, fill="both", expand=True)
+        self.results_textbox.insert("0.0", "Results will be displayed here...")
+        self.results_textbox.configure(state="disabled")
+
+    def browse_folder(self):
+        """
+        Opens a dialog to select a folder and inserts the chosen path
+        into the main search folder entry.
+        """
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            self.folder_entry.delete(0, "end")
+            self.folder_entry.insert(0, folder_path)
+
+    def browse_output_folder(self):
+        """
+        Opens a dialog to select the output folder and inserts the path
+        into the output folder entry.
+        """
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            self.output_folder_entry.delete(0, "end")
+            self.output_folder_entry.insert(0, folder_path)
+
+    def start_search_thread(self):
+        """
+        Validates user input and launches the PDF search logic in a separate
+        thread to prevent the GUI from becoming unresponsive during the process.
+        """
+        folder_path = self.folder_entry.get()
+        output_folder_path = self.output_folder_entry.get()
+        words_str = self.words_entry.get()
+
+        strip_spaces = self.strip_spaces_var.get() == "on"
+        use_regex = self.regex_var.get() == "on"
+        create_pdf = self.create_pdf_var.get() == "on"
+        combine_results = self.combine_results_var.get() == "on"
+        highlight_matches = self.highlight_matches_var.get() == "on"
+
+        if strip_spaces:
+            search_words = [word.strip() for word in words_str.split(',') if word.strip()]
+        else:
+            search_words = [word for word in words_str.split(',')]
+
+        if not os.path.isdir(folder_path):
+            messagebox.showerror("Error", f"Search folder not found at '{folder_path}'")
+            return
+        if output_folder_path and not os.path.isdir(output_folder_path):
+            messagebox.showerror("Error", f"Output folder not found at '{output_folder_path}'")
+            return
+        if not search_words:
+            messagebox.showerror("Error", "Please enter at least one word to search.")
+            return
+
+        # Recursively find all PDF files in the specified folder and its subfolders
+        pdf_files = [os.path.join(r, f) for r, _, fs in os.walk(folder_path) for f in fs if f.lower().endswith('.pdf')]
+
+        if not pdf_files:
+            messagebox.showinfo("No PDFs Found", "No PDF files were found in the specified folder.")
+            return
+
+        # Update UI to indicate the search has started
+        self.search_button.configure(state="disabled", text="Searching...")
+        self.results_textbox.configure(state="normal")
+        self.results_textbox.delete("1.0", "end")
+        self.results_textbox.configure(state="disabled")
+        self.progressbar.set(0)
+        self.progress_label.configure(text="")
+
+        # Start the worker thread
+        thread = threading.Thread(target=self.search_worker, args=(
+            pdf_files, search_words, folder_path, use_regex, create_pdf, output_folder_path, combine_results, highlight_matches))
+        thread.daemon = True
+        thread.start()
+
+    def search_worker(self, pdf_files, search_words, base_folder, use_regex, create_pdf, output_folder_path,
+                     combine_results, highlight_matches):
+        """
+        The core logic for searching PDF files and extracting matching pages.
+        This function runs in a separate thread.
+        """
+        total_files = len(pdf_files)
+        self.update_results(
+            f"Found {total_files} PDF(s). Searching for: '{', '.join(search_words)}'\n" + "=" * 50 + "\n")
+
+        found_something = False
+
+        # Initialize a new PDF document for combined results if the option is selected
+        combined_pdf_doc = fitz.open() if combine_results else None
+        # Use a set to prevent adding the same page from a file multiple times to the combined PDF
+        added_pages_to_combined = set()
+
+        for i, file_path in enumerate(pdf_files):
+            self.after(0, self.update_progress, i, total_files)
+            relative_path = os.path.relpath(file_path, base_folder)
+            file_results_text = f"--- Results for: {relative_path} ---\n"
+            file_had_match = False
+
+            # Dictionaries to store new PDF documents for each word
+            word_to_new_pdf = {}
+            word_to_added_pages = {}
+
+            try:
+                with fitz.open(file_path) as doc:
+                    # Create a temporary document to hold pages from the current file,
+                    # which we can then modify (e.g., add highlights)
+                    temp_doc = fitz.open()
+
+                    for page_num, page in enumerate(doc):
+                        text = page.get_text("text")
+                        page_matched_any_word = False
+
+                        # Use a list to store highlights for the current page
+                        highlights_to_add = []
+
+                        for word in search_words:
+                            # Use regex pattern based on user selection
+                            pattern = word if use_regex else re.escape(word)
+                            matches = list(re.finditer(pattern, text, re.IGNORECASE))
+
+                            if matches:
+                                file_had_match = True
+                                found_something = True
+                                page_matched_any_word = True
+
+                                # Add a small snippet of the match context to the results log
+                                context_start = max(0, matches[0].start() - 60)
+                                context_end = min(len(text), matches[0].end() + 60)
+                                context = text[context_start:context_end].replace('\n', ' ').strip()
+                                file_results_text += f"  - Page {page_num + 1} (match for '{word}'): ...{context}...\n"
+
+                                # Find rectangles for highlighting the word
+                                if highlight_matches:
+                                    # Use PyMuPDF's search_for to get rectangles for highlighting
+                                    rects = page.search_for(word)
+                                    highlights_to_add.extend(rects)
+
+                        # Logic for separate PDFs: if a match was found, add the page to the correct temporary doc
+                        if create_pdf and not combine_results:
+                            if page_matched_any_word:
+                                for word in search_words:
+                                    if word in text:
+                                        if word not in word_to_added_pages:
+                                            word_to_added_pages[word] = set()
+                                        if page_num not in word_to_added_pages[word]:
+                                            if word not in word_to_new_pdf:
+                                                word_to_new_pdf[word] = fitz.open()
+
+                                            # Create a new page instance to apply highlight
+                                            new_page = fitz.open()
+                                            new_page.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                                            if highlight_matches:
+                                                for rect in new_page[0].search_for(word):
+                                                    new_page[0].add_highlight_annot(rect)
+
+                                            word_to_new_pdf[word].insert_pdf(new_page)
+                                            new_page.close()
+                                            word_to_added_pages[word].add(page_num)
+
+                        # Logic for combined PDF: if the page had any match, add it to the temporary doc
+                        if create_pdf and combine_results and page_matched_any_word:
+                            page_identifier = (file_path, page_num)
+                            if page_identifier not in added_pages_to_combined:
+                                # Insert page into temporary doc and add highlights
+                                temp_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                                if highlight_matches:
+                                    temp_page = temp_doc[temp_doc.page_count - 1]
+                                    for word in search_words:
+                                        for rect in temp_page.search_for(word):
+                                            temp_page.add_highlight_annot(rect)
+                                added_pages_to_combined.add(page_identifier)
+
+                    # After processing all pages for a file, insert the temporary doc's pages into the combined doc
+                    if create_pdf and combine_results and temp_doc.page_count > 0:
+                        combined_pdf_doc.insert_pdf(temp_doc)
+                    temp_doc.close()
+
+            except Exception as e:
+                # Log any errors encountered during file processing
+                file_results_text += f"    - Error processing this file: {e}\n"
+
+            if file_had_match:
+                self.update_results(file_results_text + "\n", append=True)
+
+            # Save separate PDFs if that option is chosen after processing the file
+            if create_pdf and not combine_results:
+                for word, new_pdf_doc in word_to_new_pdf.items():
+                    if new_pdf_doc.page_count > 0:
+                        self.save_new_pdf(new_pdf_doc, word, file_path, base_folder, output_folder_path)
+
+        # Save the single combined PDF after the entire search is complete
+        if create_pdf and combine_results and combined_pdf_doc.page_count > 0:
+            try:
+                output_dir = output_folder_path if output_folder_path else base_folder
+                os.makedirs(output_dir, exist_ok=True)
+
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                output_filename = os.path.join(output_dir, f"pdf_output_{timestamp}.pdf")
+
+                combined_pdf_doc.save(output_filename)
+                self.update_results(f"✅ Created combined PDF: {os.path.abspath(output_filename)}\n", append=True)
+            except Exception as e:
+                self.update_results(f"❌ Error saving combined PDF: {e}\n", append=True)
+            finally:
+                combined_pdf_doc.close()
+
+        self.after(0, self.search_complete, found_something, total_files)
+
+    def save_new_pdf(self, new_pdf_doc, word, file_path, base_folder, output_folder_path):
+        """
+        Helper function to save individual extracted PDFs.
+        It generates a clean filename based on the original file and the search word.
+        """
+        try:
+            output_dir = output_folder_path if output_folder_path else os.path.dirname(file_path)
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Sanitize the word to be a valid part of the filename
+            sanitized_word = re.sub(r'[\\/*?:"<>|]', "", word)
+            original_filename = os.path.splitext(os.path.basename(file_path))[0]
+            output_filename = os.path.join(output_dir, f"{original_filename}_pages_with_{sanitized_word}.pdf")
+
+            new_pdf_doc.save(output_filename)
+            self.update_results(f"  ✅ Created new PDF: {os.path.abspath(output_filename)}\n", append=True)
+        except Exception as e:
+            self.update_results(f"  ❌ Error saving new PDF for word '{word}': {e}\n", append=True)
+        finally:
+            new_pdf_doc.close()
+
+    def update_progress(self, current_file_index, total_files):
+        """
+        Safely updates the progress bar and label from the main GUI thread.
+        This is a crucial step for preventing GUI freezes.
+        """
+        progress_percentage = (current_file_index + 1) / total_files
+        self.progressbar.set(progress_percentage)
+        self.progress_label.configure(text=f"Processing file {current_file_index + 1} of {total_files}...")
+
+    def search_complete(self, found_something, total_files):
+        """
+        Called when the search is finished to reset the UI elements and
+        provide a final status message.
+        """
+        self.progressbar.set(1)
+        if not found_something:
+            self.update_results("\nSearch complete. No matches found in any documents.", append=True)
+        else:
+            self.update_results("\n" + "=" * 50 + "\nSearch complete.", append=True)
+
+        self.progress_label.configure(text=f"Search complete. Processed {total_files} files.")
+        self.search_button.configure(state="normal", text="Search PDFs")
+
+    def update_results(self, text, append=False):
+        """
+        Safely updates the results textbox from the main GUI thread.
+        This function ensures that GUI updates happen on the correct thread.
+        """
+
+        def _update():
+            self.results_textbox.configure(state="normal")
+            if not append:
+                self.results_textbox.delete("1.0", "end")
+            self.results_textbox.insert("end", text)
+            self.results_textbox.see("end")  # Scroll to the bottom
+            self.results_textbox.configure(state="disabled")
+
+        self.after(0, _update)
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
