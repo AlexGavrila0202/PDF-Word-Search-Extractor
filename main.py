@@ -37,7 +37,7 @@ class App(customtkinter.CTk):
 
         # --- Window Configuration ---
         self.title("PDF Word Search & Extractor")
-        self.geometry("700x800")
+        self.geometry("920x800")
         customtkinter.set_appearance_mode("dark")
         customtkinter.set_default_color_theme("blue")
 
@@ -412,3 +412,4 @@ class App(customtkinter.CTk):
 if __name__ == "__main__":
     app = App()
     app.mainloop()
+
